@@ -66,7 +66,7 @@ async def test_send_message_serializes_pydantic_attachments(bot):
     [call] = bot.client.calls
     assert call["params"] == {"user_id": 5}
     assert call["json"]["attachments"] == [
-        {"type": "inline_keyboard", "payload": {"buttons": [[{"text": "Go", "payload": "go"}]]}}
+        {"type": "inline_keyboard", "payload": {"buttons": [[{"type": "callback", "text": "Go", "payload": "go"}]]}}
     ]
 
 
@@ -261,3 +261,32 @@ async def test_wait_rejects_invalid_budget(bot, budget):
     with pytest.raises(ValueError):
         await bot.send_message(chat_id=-1, wait_attachments=True, attachment_wait_timeout=budget)
     assert bot.client.calls == []
+
+
+async def test_send_callback_message(bot):
+    message = {
+        "text": "New text",
+        "attachments": [Attachment(type="inline_keyboard", payload=ButtonsPayload(
+            buttons=[[CallbackButton(text="Run", payload="run")]],
+        ))],
+    }
+    await bot.send_callback("cb.test", "Done", message=message)
+    [call] = bot.client.calls
+    assert call["method"] == "POST"
+    assert call["endpoint"] == "/answers"
+    assert call["params"] == {"callback_id": "cb.test"}
+    assert call["json"] == {
+        "notification": "Done",
+        "message": {"text": "New text", "attachments": [{"type": "inline_keyboard", "payload": {
+            "buttons": [[{"type": "callback", "text": "Run", "payload": "run"}]],
+        }}]},
+    }
+    assert isinstance(message["attachments"][0], Attachment)
+
+
+async def test_send_callback_notification_and_empty_attachments(bot):
+    await bot.send_callback("cb.first", "Done")
+    assert bot.client.calls[0]["params"] == {"callback_id": "cb.first"}
+    assert bot.client.calls[0]["json"] == {"notification": "Done"}
+    await bot.send_callback("cb.second", message={"attachments": []})
+    assert bot.client.calls[1]["json"] == {"message": {"attachments": []}}

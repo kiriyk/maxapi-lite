@@ -3,7 +3,7 @@
 """
 
 from pydantic import BaseModel
-from typing import Optional, List, Any, Union, Dict
+from typing import Optional, List, Any, Union, Dict, Literal
 
 
 # Кнопки
@@ -12,6 +12,7 @@ class CallbackButton(BaseModel):
 
     text: str
     payload: str
+    type: Literal["callback"] = "callback"
 
 
 class LinkButton(BaseModel):
@@ -19,24 +20,28 @@ class LinkButton(BaseModel):
 
     text: str
     url: str
+    type: Literal["link"] = "link"
 
 
 class MessageButton(BaseModel):
     """Кнопка с текстовым сообщением"""
 
     text: str
+    type: Literal["message"] = "message"
 
 
 class RequestContactButton(BaseModel):
     """Кнопка запроса контакта"""
 
     text: str
+    type: Literal["request_contact"] = "request_contact"
 
 
 class RequestGeoLocationButton(BaseModel):
     """Кнопка запроса геолокации"""
 
     text: str
+    type: Literal["request_geo_location"] = "request_geo_location"
 
 
 ButtonType = Union[CallbackButton, LinkButton, MessageButton, RequestContactButton, RequestGeoLocationButton]

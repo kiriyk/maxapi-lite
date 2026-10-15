@@ -17,7 +17,7 @@ import aiohttp
 from .client import MaxApiClient
 from .enums import ParseMode
 from .exceptions import AttachmentNotReady, MaxApiError
-from .types import Attachment
+from .types import Attachment, ButtonsPayload, ButtonType
 from .transfers import download_file, multipart_upload, validate_upload_file
 
 
@@ -130,7 +130,7 @@ class Bot:
         result: List[Dict[str, Any]] = []
         for att in attachments:
             if hasattr(att, "model_dump"):
-                result.append(att.model_dump())
+                result.append(att.model_dump(mode="json", exclude_none=True))
             elif isinstance(att, dict):
                 result.append(att)
             else:
@@ -163,6 +163,14 @@ class Bot:
                     ]
                 ]
             },
+        }
+
+    @staticmethod
+    def build_keyboard(rows: List[List[Union[ButtonType, Dict[str, Any]]]]) -> Dict[str, Any]:
+        """Build an inline keyboard from rows of button models or dictionaries."""
+        return {
+            "type": "inline_keyboard",
+            "payload": ButtonsPayload(buttons=rows).model_dump(mode="json", exclude_none=True),
         }
 
     @staticmethod
@@ -465,7 +473,9 @@ class Bot:
         """
         return await self.client.request("DELETE", f"/messages/{message_id}")
 
-    async def send_callback(self, callback_id: str, notification: Optional[str] = None) -> Dict[str, Any]:
+    async def send_callback(
+        self, callback_id: str, notification: Optional[str] = None, *, message: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
         Ответить на callback query
 
@@ -476,12 +486,17 @@ class Bot:
         Returns:
             Dict с результатом
         """
-        body: Dict[str, Any] = {"callback_id": callback_id}
+        body: Dict[str, Any] = {}
 
         if notification:
             body["notification"] = notification
+        if message is not None:
+            message_body = dict(message)
+            if "attachments" in message_body:
+                message_body["attachments"] = self._serialize_attachments(message_body["attachments"])
+            body["message"] = message_body
 
-        return await self.client.request("POST", "/answers", json=body)
+        return await self.client.request("POST", "/answers", params={"callback_id": callback_id}, json=body)
 
     async def get_chat_by_id(self, id: int) -> Dict[str, Any]:
         """
