@@ -7,6 +7,7 @@ import mimetypes
 import os
 import ssl
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import quote
 
 import aiohttp
 
@@ -64,7 +65,10 @@ class Bot:
             self._me = await self.client.request("GET", "/me")
         return self._me
 
-    async def get_updates(self, limit: int = 100, timeout: int = 30, marker: Optional[int] = None) -> Dict[str, Any]:
+    async def get_updates(
+        self, limit: int = 100, timeout: int = 30, marker: Optional[int] = None, *,
+        types: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Получить обновления бота (long polling)
 
@@ -76,11 +80,42 @@ class Bot:
         Returns:
             Dict с полем "updates" - список обновлений
         """
+        if not 0 <= timeout <= 90 or not 1 <= limit <= 1000:
+            raise ValueError("Polling timeout must be 0–90 and limit must be 1–1000")
         params = {"limit": limit, "timeout": timeout}
         if marker is not None:
             params["marker"] = marker
+        if types:
+            params["types"] = ",".join(types)
 
-        return await self.client.request("GET", "/updates", params=params)
+        configured = self.client.timeout
+        timeout_args = {
+            "total": max(configured.total, timeout + 10) if configured.total else configured.total,
+            "connect": configured.connect,
+            "sock_connect": configured.sock_connect,
+            "sock_read": max(configured.sock_read, timeout + 10) if configured.sock_read else configured.sock_read,
+        }
+        if hasattr(configured, "ceil_threshold"):
+            timeout_args["ceil_threshold"] = configured.ceil_threshold
+        return await self.client.request(
+            "GET", "/updates", params=params, timeout=aiohttp.ClientTimeout(**timeout_args)
+        )
+
+    async def get_video(self, video_token: str) -> Dict[str, Any]:
+        """Get video metadata; urls may be None when a video is unavailable."""
+        return await self.client.request("GET", f"/videos/{quote(video_token, safe='')}")
+
+    @staticmethod
+    def extract_attachments(update: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Extract raw incoming attachments without dropping MAX-specific fields."""
+        value = update
+        for key in ("message", "body", "attachments"):
+            if not isinstance(value, dict):
+                return []
+            value = value.get(key)
+        if not isinstance(value, list):
+            return []
+        return [attachment for attachment in value if isinstance(attachment, dict)]
 
     @staticmethod
     def _serialize_attachments(

@@ -1,4 +1,5 @@
 import pytest
+import aiohttp
 
 from maxapi_lite import Bot, CallbackButton, ButtonsPayload, Attachment, ParseMode
 
@@ -7,9 +8,10 @@ class RecordingClient:
     def __init__(self, response=None):
         self.calls = []
         self.response = response if response is not None else {}
+        self.timeout = aiohttp.ClientTimeout(total=5, sock_read=5)
 
     async def request(self, method, endpoint, params=None, json=None, **kwargs):
-        self.calls.append({"method": method, "endpoint": endpoint, "params": params, "json": json})
+        self.calls.append({"method": method, "endpoint": endpoint, "params": params, "json": json, "kwargs": kwargs})
         return self.response
 
     async def close(self):
@@ -126,3 +128,53 @@ def test_build_link_button_attachment():
         "type": "inline_keyboard",
         "payload": {"buttons": [[{"type": "link", "text": "Open", "url": "https://e.com"}]]},
     }
+
+
+async def test_updates_types_and_timeout(bot):
+    await bot.get_updates(timeout=90, marker=0, types=["message_created", "message_callback"])
+    [call] = bot.client.calls
+    assert call["params"] == {
+        "limit": 100, "timeout": 90, "marker": 0, "types": "message_created,message_callback",
+    }
+    assert call["kwargs"]["timeout"].total == 100
+    assert call["kwargs"]["timeout"].sock_read == 100
+    assert bot.client.timeout.total == 5
+
+
+@pytest.mark.parametrize("types", [None, []])
+async def test_updates_without_filter_preserves_unlimited_timeout(bot, types):
+    bot.client.timeout = aiohttp.ClientTimeout(total=None, sock_read=None)
+    await bot.get_updates(types=types)
+    call = bot.client.calls[0]
+    assert "types" not in call["params"]
+    assert call["kwargs"]["timeout"].total is None
+    assert call["kwargs"]["timeout"].sock_read is None
+
+
+@pytest.mark.parametrize("params", [{"timeout": -1}, {"timeout": 91}, {"limit": 0}, {"limit": 1001}])
+async def test_updates_rejects_invalid_bounds(bot, params):
+    with pytest.raises(ValueError):
+        await bot.get_updates(**params)
+    assert bot.client.calls == []
+
+
+async def test_get_video(bot):
+    bot.client.response = {"urls": None, "token": "video-test"}
+    assert await bot.get_video("video-test") == bot.client.response
+    assert bot.client.calls[0]["endpoint"] == "/videos/video-test"
+    assert bot.client.calls[0]["method"] == "GET"
+
+
+@pytest.mark.parametrize("update", [None, {}, {"message": None}, {"message": {"body": []}},
+    {"message": {"body": {"attachments": None}}}])
+def test_extract_attachments_handles_missing_data(update):
+    assert Bot.extract_attachments(update) == []
+
+
+def test_extract_attachments_preserves_payload_fields():
+    attachments = [
+        {"type": "video", "payload": {"url": "https://cdn.example/video", "token": "v", "id": 1}, "width": 10},
+        {"type": "file", "payload": {"url": "https://cdn.example/file", "token": "f", "fileId": 2}, "size": 20},
+        {"type": "image", "payload": {"photo_id": 3, "token": "i", "url": "https://cdn.example/image"}},
+    ]
+    assert Bot.extract_attachments({"message": {"body": {"attachments": attachments}}}) == attachments
