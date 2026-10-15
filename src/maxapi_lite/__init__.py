@@ -7,7 +7,7 @@ maxapi_lite - легковесный асинхронный клиент MAX Bot
 
 from .bot import Bot
 from .enums import ChatPermission, ParseMode
-from .exceptions import InvalidToken, MaxApiError
+from .exceptions import AttachmentNotReady, FileTooLarge, InvalidToken, MaxApiError, RateLimited
 from .types import (
     Attachment,
     ButtonsPayload,
@@ -39,4 +39,7 @@ __all__ = [
     # Exceptions
     "MaxApiError",
     "InvalidToken",
+    "FileTooLarge",
+    "AttachmentNotReady",
+    "RateLimited",
 ]

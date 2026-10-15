@@ -22,10 +22,22 @@ async def server():
     async def broken(request):
         return web.Response(text="boom", status=500)
 
+    async def not_ready(request):
+        return web.json_response({"code": "attachment.not.ready", "message": "processing"}, status=400)
+
+    async def limited(request):
+        return web.json_response({"message": "slow down"}, status=429, headers={"Retry-After": "7"})
+
+    async def limited_text(request):
+        return web.Response(text="slow down", status=429, headers={"Retry-After": "invalid"})
+
     app = web.Application()
     app.router.add_get("/me", me)
     app.router.add_get("/unauthorized", unauthorized)
     app.router.add_get("/broken", broken)
+    app.router.add_get("/not-ready", not_ready)
+    app.router.add_get("/limited", limited)
+    app.router.add_get("/limited-text", limited_text)
 
     test_server = TestServer(app)
     await test_server.start_server()
@@ -116,3 +128,33 @@ async def test_custom_base_url_with_trailing_slash(server):
         assert await client.request("GET", "/me") == {"user_id": 1}
     finally:
         await client.close()
+
+
+async def test_api_error_keeps_status_and_api_code(client):
+    import maxapi_lite
+
+    with pytest.raises(MaxApiError) as exc:
+        await client.request("GET", "/not-ready")
+    assert exc.value.code == 400
+    assert getattr(exc.value, "api_code", None) == "attachment.not.ready"
+    assert isinstance(exc.value, maxapi_lite.AttachmentNotReady)
+
+
+@pytest.mark.parametrize("endpoint, expected", [("/limited", 7), ("/limited-text", None)])
+async def test_429_keeps_retry_after(client, endpoint, expected):
+    import maxapi_lite
+
+    with pytest.raises(MaxApiError) as exc:
+        await client.request("GET", endpoint)
+    assert isinstance(exc.value, maxapi_lite.RateLimited)
+    assert exc.value.retry_after == expected
+    assert exc.value.code == 429
+
+
+def test_file_too_large_is_compatible():
+    import maxapi_lite
+
+    assert hasattr(maxapi_lite, "FileTooLarge")
+    error = maxapi_lite.FileTooLarge("video.mp4", 251_000_000, 250_000_000)
+    assert isinstance(error, MaxApiError)
+    assert (error.code, error.size, error.limit) == (413, 251_000_000, 250_000_000)

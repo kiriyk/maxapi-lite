@@ -6,7 +6,7 @@ import ssl
 
 import aiohttp
 from typing import Optional, Dict, Any
-from .exceptions import MaxApiError, InvalidToken
+from .exceptions import MaxApiError, InvalidToken, api_error
 
 
 class MaxApiClient:
@@ -120,20 +120,18 @@ class MaxApiClient:
                 # Читаем ответ
                 try:
                     data = await response.json()
-                except Exception:
+                except (aiohttp.ContentTypeError, ValueError):
                     # Если не JSON, читаем как текст
                     text = await response.text()
                     data = {"error": text}
 
                 # Проверяем статус
-                if response.status == 401:
-                    raise InvalidToken("Invalid or expired token")
-
                 if response.status >= 400:
-                    error_message = data.get("error", data.get("message", "Unknown error"))
-                    raise MaxApiError(error_message, response.status)
+                    raise api_error(response.status, data, response.headers.get("Retry-After"))
 
+                if not isinstance(data, dict):
+                    raise MaxApiError("MAX API returned a non-object JSON response", 502)
                 return data
 
         except aiohttp.ClientError as e:
-            raise MaxApiError(f"Connection error: {e}", 500)
+            raise MaxApiError("Connection error while calling MAX API", 500) from e
