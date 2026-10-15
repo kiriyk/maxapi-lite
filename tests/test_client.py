@@ -31,6 +31,11 @@ async def server():
     async def limited_text(request):
         return web.Response(text="slow down", status=429, headers={"Retry-After": "invalid"})
 
+    async def coded_error(request):
+        status = int(request.match_info["status"])
+        code = "access.denied" if status == 401 else "limit.exceeded"
+        return web.json_response({"code": code, "message": "rejected"}, status=status)
+
     app = web.Application()
     app.router.add_get("/me", me)
     app.router.add_get("/unauthorized", unauthorized)
@@ -38,6 +43,7 @@ async def server():
     app.router.add_get("/not-ready", not_ready)
     app.router.add_get("/limited", limited)
     app.router.add_get("/limited-text", limited_text)
+    app.router.add_get("/coded/{status}", coded_error)
 
     test_server = TestServer(app)
     await test_server.start_server()
@@ -159,3 +165,16 @@ def test_file_too_large_is_compatible():
     error = maxapi_lite.FileTooLarge("video.mp4", 251_000_000, 250_000_000)
     assert isinstance(error, MaxApiError)
     assert (error.code, error.size, error.limit) == (413, 251_000_000, 250_000_000)
+
+
+@pytest.mark.parametrize("status,code,kind", [
+    (401, "access.denied", "InvalidToken"), (429, "limit.exceeded", "RateLimited"),
+])
+async def test_preferred_error_subclasses_keep_api_code(client, status, code, kind):
+    import maxapi_lite
+
+    with pytest.raises(MaxApiError) as exc:
+        await client.request("GET", f"/coded/{status}")
+    assert isinstance(exc.value, getattr(maxapi_lite, kind))
+    assert exc.value.code == status
+    assert exc.value.api_code == code

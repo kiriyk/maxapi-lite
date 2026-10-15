@@ -131,6 +131,30 @@ async def test_upload_http_errors_are_not_success(serve, tmp_path, status):
         await bot.close_session()
 
 
+async def test_upload_preserves_structured_error(serve, tmp_path):
+    from maxapi_lite import AttachmentNotReady
+    from maxapi_lite.transfers import multipart_upload
+
+    async def upload(request):
+        await request.read()
+        return web.json_response({"code": "attachment.not.ready", "message": "processing"}, status=400)
+
+    app = web.Application()
+    app.router.add_post("/upload", upload)
+    server = await serve(app)
+    path = tmp_path / "video.mp4"
+    path.write_bytes(b"data")
+    bot = Bot("test")
+    try:
+        with pytest.raises(MaxApiError) as exc:
+            await multipart_upload(await bot.client._get_transfer_session(), str(server.make_url("/upload")), str(path))
+        assert isinstance(exc.value, AttachmentNotReady)
+        assert exc.value.code == 400
+        assert exc.value.api_code == "attachment.not.ready"
+    finally:
+        await bot.close_session()
+
+
 @pytest.fixture
 def no_transfer_sleep(monkeypatch):
     from maxapi_lite import transfers

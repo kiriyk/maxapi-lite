@@ -21,8 +21,8 @@ class MaxApiError(Exception):
 class InvalidToken(MaxApiError):
     """Неверный токен авторизации"""
 
-    def __init__(self, message: str = "Invalid token"):
-        super().__init__(message, 401)
+    def __init__(self, message: str = "Invalid token", *, api_code: Optional[str] = None):
+        super().__init__(message, 401, api_code=api_code)
 
 
 class FileTooLarge(MaxApiError):
@@ -44,9 +44,12 @@ class AttachmentNotReady(MaxApiError):
 class RateLimited(MaxApiError):
     """The server rejected a request due to its rate limit."""
 
-    def __init__(self, message: str = "Rate limit exceeded", *, retry_after: Optional[float] = None):
+    def __init__(
+        self, message: str = "Rate limit exceeded", *,
+        retry_after: Optional[float] = None, api_code: Optional[str] = None,
+    ):
         self.retry_after = retry_after
-        super().__init__(message, 429)
+        super().__init__(message, 429, api_code=api_code)
 
 
 def _parse_retry_after(value: Optional[str]) -> Optional[float]:
@@ -73,9 +76,9 @@ def api_error(status: int, data: Any, retry_after: Optional[str] = None) -> MaxA
     code = data.get("code")
     code = code if isinstance(code, str) else None
     if status == 401:
-        return InvalidToken("Invalid or expired token")
+        return InvalidToken("Invalid or expired token", api_code=code)
     if status == 429:
-        return RateLimited(message, retry_after=_parse_retry_after(retry_after))
+        return RateLimited(message, retry_after=_parse_retry_after(retry_after), api_code=code)
     if code == "attachment.not.ready":
         return AttachmentNotReady(message, status)
     return MaxApiError(message, status, api_code=code)

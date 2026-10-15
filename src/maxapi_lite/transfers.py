@@ -48,7 +48,7 @@ async def multipart_upload(session: aiohttp.ClientSession, url: str, file_path: 
                 except (aiohttp.ContentTypeError, ValueError):
                     data = {}
                 if response.status >= 400:
-                    raise api_error(response.status, {}, response.headers.get("Retry-After"))
+                    raise api_error(response.status, data, response.headers.get("Retry-After"))
                 return data if isinstance(data, dict) else {}
         except aiohttp.ClientError as exc:
             raise MaxApiError("Connection error while uploading a file", 500) from exc
