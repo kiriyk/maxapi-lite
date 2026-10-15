@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "maxapi-lite"
+dynamic = ["version"]
+description = "Lightweight async client for the MAX messenger Bot API, compatible with aiohttp 3.8"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Kirill" }]
+keywords = ["max", "max.ru", "bot", "bot-api", "messenger", "aiohttp", "asyncio"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Natural Language :: Russian",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "aiohttp>=3.8",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/kiriyk/maxapi-lite"
+Source = "https://github.com/kiriyk/maxapi-lite"
+Issues = "https://github.com/kiriyk/maxapi-lite/issues"
+Changelog = "https://github.com/kiriyk/maxapi-lite/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/maxapi_lite/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maxapi_lite"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
