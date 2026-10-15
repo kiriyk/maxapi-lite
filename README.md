@@ -37,7 +37,7 @@ async def main():
 
     # Отправка фото + кнопки
     result = await bot.send_message_with_media(
-        chat_id=-70893181482276,
+        chat_id=-1,  # Демонстрационный ID — замените на ID своего чата
         text="<b>Розыгрыш</b>",
         media_type="photo",
         file_path="banner.jpg",  # или media_url="https://..."
@@ -47,7 +47,7 @@ async def main():
     # Извлечение mid и закрепление
     mid = bot.extract_message_id(result)
     if mid:
-        await bot.pin_chat_message(chat_id=-70893181482276, message_id=mid)
+        await bot.pin_chat_message(chat_id=-1, message_id=mid)
 
     await bot.close_session()
 
