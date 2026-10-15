@@ -3,8 +3,12 @@ Max API Lite - легковесный клиент для Max API
 Совместим с aiohttp 3.8.4
 """
 
+import asyncio
+import math
 import os
 import ssl
+from asyncio import sleep
+from time import monotonic
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
@@ -12,7 +16,7 @@ import aiohttp
 
 from .client import MaxApiClient
 from .enums import ParseMode
-from .exceptions import MaxApiError
+from .exceptions import AttachmentNotReady, MaxApiError
 from .types import Attachment
 from .transfers import multipart_upload, validate_upload_file
 
@@ -215,6 +219,35 @@ class Bot:
                 payload = {"token": payload["token"]}
         return {"type": attachment_type, "payload": payload}
 
+    async def _request_message(
+        self, method: str, *, params: Dict[str, Any], body: Dict[str, Any],
+        wait_attachments: bool, attachment_wait_timeout: float,
+    ) -> Dict[str, Any]:
+        if not wait_attachments:
+            return await self.client.request(method, "/messages", params=params, json=body)
+        if not math.isfinite(attachment_wait_timeout) or attachment_wait_timeout <= 0:
+            raise ValueError("attachment_wait_timeout must be finite and positive")
+        deadline = monotonic() + attachment_wait_timeout
+        delay = 1.0
+        last_error = None
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                if last_error is not None:
+                    raise last_error
+                raise asyncio.TimeoutError("Attachment wait deadline expired")
+            try:
+                return await asyncio.wait_for(
+                    self.client.request(method, "/messages", params=params, json=body), timeout=remaining,
+                )
+            except AttachmentNotReady as exc:
+                last_error = exc
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise
+                await sleep(min(delay, remaining))
+                delay = min(delay * 2, 16.0)
+
     async def send_message(
         self,
         chat_id: Optional[int] = None,
@@ -223,6 +256,9 @@ class Bot:
         attachments: Optional[List[Union[Attachment, Dict[str, Any]]]] = None,
         format: Optional[str] = None,
         notify: Optional[bool] = None,
+        *,
+        wait_attachments: bool = False,
+        attachment_wait_timeout: float = 60.0,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -266,7 +302,10 @@ class Bot:
         if notify is not None:
             body["notify"] = notify
 
-        return await self.client.request("POST", "/messages", params=params, json=body)
+        return await self._request_message(
+            "POST", params=params, body=body, wait_attachments=wait_attachments,
+            attachment_wait_timeout=attachment_wait_timeout,
+        )
 
     async def send_message_with_media(
         self,
@@ -279,6 +318,8 @@ class Bot:
         attachments: Optional[List[Union[Attachment, Dict[str, Any]]]] = None,
         format: Optional[str] = None,
         notify: Optional[bool] = None,
+        wait_attachments: bool = False,
+        attachment_wait_timeout: float = 60.0,
     ) -> Dict[str, Any]:
         send_attachments: List[Union[Attachment, Dict[str, Any]]] = []
         if attachments:
@@ -293,6 +334,8 @@ class Bot:
             attachments=send_attachments or None,
             format=format,
             notify=notify,
+            wait_attachments=wait_attachments,
+            attachment_wait_timeout=attachment_wait_timeout,
         )
 
     async def edit_message(
@@ -301,6 +344,9 @@ class Bot:
         text: Optional[str] = None,
         attachments: Optional[List[Union[Attachment, Dict[str, Any]]]] = None,
         format: Optional[str] = None,
+        *,
+        wait_attachments: bool = False,
+        attachment_wait_timeout: float = 60.0,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -332,7 +378,10 @@ class Bot:
             elif self.parse_mode:
                 body["format"] = self.parse_mode.value
 
-        return await self.client.request("PUT", "/messages", params=params, json=body)
+        return await self._request_message(
+            "PUT", params=params, body=body, wait_attachments=wait_attachments,
+            attachment_wait_timeout=attachment_wait_timeout,
+        )
 
     async def edit_message_with_media(
         self,
@@ -344,6 +393,8 @@ class Bot:
         media_url: Optional[str] = None,
         attachments: Optional[List[Union[Attachment, Dict[str, Any]]]] = None,
         format: Optional[str] = None,
+        wait_attachments: bool = False,
+        attachment_wait_timeout: float = 60.0,
     ) -> Dict[str, Any]:
         edit_attachments: List[Union[Attachment, Dict[str, Any]]] = []
         if attachments:
@@ -357,6 +408,8 @@ class Bot:
             text=text,
             attachments=edit_attachments or [],
             format=format,
+            wait_attachments=wait_attachments,
+            attachment_wait_timeout=attachment_wait_timeout,
         )
 
     async def pin_chat_message(self, chat_id: int, message_id: str, notify: bool = True) -> Dict[str, Any]:

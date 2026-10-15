@@ -1,7 +1,9 @@
 import pytest
 import aiohttp
+import asyncio
 
 from maxapi_lite import Bot, CallbackButton, ButtonsPayload, Attachment, ParseMode
+from maxapi_lite import AttachmentNotReady, MaxApiError, RateLimited
 
 
 class RecordingClient:
@@ -178,3 +180,84 @@ def test_extract_attachments_preserves_payload_fields():
         {"type": "image", "payload": {"photo_id": 3, "token": "i", "url": "https://cdn.example/image"}},
     ]
     assert Bot.extract_attachments({"message": {"body": {"attachments": attachments}}}) == attachments
+
+
+class SequenceClient(RecordingClient):
+    def __init__(self, responses):
+        super().__init__()
+        self.responses = iter(responses)
+
+    async def request(self, *args, **kwargs):
+        await super().request(*args, **kwargs)
+        response = next(self.responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    import maxapi_lite.bot as module
+    now = [0.0]
+    sleeps = []
+
+    async def sleep(delay):
+        sleeps.append(delay)
+        now[0] += delay
+
+    monkeypatch.setattr(module, "monotonic", lambda: now[0], raising=False)
+    monkeypatch.setattr(module, "sleep", sleep, raising=False)
+    return sleeps
+
+
+@pytest.mark.parametrize("method", ["send_message", "edit_message"])
+async def test_attachment_not_ready_retry(bot, clock, method):
+    bot.client = SequenceClient([AttachmentNotReady(), AttachmentNotReady(), {"ok": True}])
+    args = {"chat_id": -1} if method == "send_message" else {"message_id": "mid.test"}
+    result = await getattr(bot, method)(**args, attachments=[{"type": "video", "payload": {"token": "v"}}], wait_attachments=True)
+    assert result == {"ok": True}
+    assert clock == [1, 2]
+    assert len(bot.client.calls) == 3
+    assert all(call == bot.client.calls[0] for call in bot.client.calls)
+
+
+async def test_attachment_wait_deadline(bot, clock):
+    bot.client = SequenceClient([AttachmentNotReady() for _ in range(20)])
+    with pytest.raises(AttachmentNotReady):
+        await bot.send_message(chat_id=-1, wait_attachments=True, attachment_wait_timeout=60)
+    assert sum(clock) == 60
+    assert clock == [1, 2, 4, 8, 16, 16, 13]
+    assert len(bot.client.calls) == 7
+
+
+@pytest.mark.parametrize("error", [RateLimited(), MaxApiError(), asyncio.TimeoutError(), asyncio.CancelledError()])
+async def test_no_retry_after_ambiguous_failure(bot, clock, error):
+    bot.client = SequenceClient([error])
+    with pytest.raises(type(error)):
+        await bot.send_message(chat_id=-1, wait_attachments=True)
+    assert len(bot.client.calls) == 1
+    assert clock == []
+
+
+async def test_wait_disabled(bot, clock):
+    bot.client = SequenceClient([AttachmentNotReady()])
+    with pytest.raises(AttachmentNotReady):
+        await bot.send_message(chat_id=-1)
+    assert len(bot.client.calls) == 1
+    assert clock == []
+
+
+@pytest.mark.parametrize("method", ["send_message_with_media", "edit_message_with_media"])
+async def test_media_helpers_forward_wait_flag(bot, clock, method):
+    bot.client = SequenceClient([AttachmentNotReady(), {"ok": True}])
+    args = {"chat_id": -1} if method.startswith("send") else {"message_id": "mid.test"}
+    result = await getattr(bot, method)(**args, media_type="video", media_url="https://cdn.example/video", wait_attachments=True)
+    assert result == {"ok": True}
+    assert clock == [1]
+
+
+@pytest.mark.parametrize("budget", [0, -1, float("nan"), float("inf")])
+async def test_wait_rejects_invalid_budget(bot, budget):
+    with pytest.raises(ValueError):
+        await bot.send_message(chat_id=-1, wait_attachments=True, attachment_wait_timeout=budget)
+    assert bot.client.calls == []
