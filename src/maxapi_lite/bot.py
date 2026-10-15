@@ -5,6 +5,7 @@ Max API Lite - легковесный клиент для Max API
 
 import mimetypes
 import os
+import ssl
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
@@ -21,7 +22,14 @@ class Bot:
     Реализует только необходимые методы для совместимости с aiohttp 3.8.4
     """
 
-    def __init__(self, token: Optional[str] = None, parse_mode: Optional[ParseMode] = None):
+    def __init__(
+        self, token: Optional[str] = None, parse_mode: Optional[ParseMode] = None, *,
+        base_url: Optional[str] = None,
+        timeout: Optional[aiohttp.ClientTimeout] = None,
+        transfer_timeout: Optional[aiohttp.ClientTimeout] = None,
+        ssl_context: Optional[ssl.SSLContext] = None,
+        connector: Optional[aiohttp.TCPConnector] = None,
+    ):
         """
         Инициализация бота
 
@@ -34,7 +42,10 @@ class Bot:
             if token is None:
                 raise ValueError("Token must be provided or set in MAX_BOT_TOKEN environment variable")
 
-        self.client = MaxApiClient(token)
+        self.client = MaxApiClient(
+            token, base_url=base_url, timeout=timeout, transfer_timeout=transfer_timeout,
+            ssl_context=ssl_context, connector=connector,
+        )
         self.parse_mode = parse_mode
         self._me: Optional[Dict[str, Any]] = None
 
