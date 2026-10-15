@@ -86,7 +86,7 @@ async def _download_into(
         if offset and validator:
             headers.update({"Range": f"bytes={offset}-", "If-Range": validator})
         try:
-            async with session.get(url, headers=headers, auto_decompress=False) as response:
+            async with session.get(url, headers=headers) as response:
                 if response.status == 416:
                     match = re.fullmatch(r"bytes \*/(\d+)", response.headers.get("Content-Range", ""))
                     if match and offset > 0 and total == offset == int(match[1]):

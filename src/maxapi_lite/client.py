@@ -71,7 +71,8 @@ class MaxApiClient:
         if self._transfer_session is None or self._transfer_session.closed:
             self._transfer_session = aiohttp.ClientSession(
                 timeout=self.transfer_timeout, connector=self._get_connector(),
-                connector_owner=False, cookie_jar=aiohttp.DummyCookieJar(),
+                connector_owner=False, cookie_jar=aiohttp.DummyCookieJar(), auto_decompress=False,
+                headers={"Accept-Encoding": "identity"},
             )
         return self._transfer_session
 

@@ -101,6 +101,7 @@ async def test_transfer_session_has_no_authorization():
         assert api.connector._ssl is context
         assert transfer.timeout.total is None
         assert transfer.timeout.sock_read == 120
+        assert transfer.auto_decompress is False
     finally:
         connector = api.connector
         await client.close()
