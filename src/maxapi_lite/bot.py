@@ -18,7 +18,7 @@ from .client import MaxApiClient
 from .enums import ParseMode
 from .exceptions import AttachmentNotReady, MaxApiError
 from .types import Attachment
-from .transfers import multipart_upload, validate_upload_file
+from .transfers import download_file, multipart_upload, validate_upload_file
 
 
 class Bot:
@@ -190,6 +190,17 @@ class Bot:
         if not result.get("token") and init_resp.get("token"):
             result["token"] = init_resp["token"]
         return result
+
+    async def download_file(
+        self, url: str, dest_path: Union[str, os.PathLike], *, chunk_size: int = 1 << 20, max_retries: int = 3,
+    ) -> int:
+        """Download an incoming attachment URL without sending bot credentials."""
+        if chunk_size <= 0 or max_retries < 0:
+            raise ValueError("chunk_size must be positive and max_retries nonnegative")
+        return await download_file(
+            await self.client._get_transfer_session(), url, dest_path,
+            chunk_size=chunk_size, max_retries=max_retries,
+        )
 
     async def create_media_attachment(
         self,

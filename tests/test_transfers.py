@@ -1,4 +1,6 @@
 import io
+import asyncio
+import aiohttp
 
 import pytest
 from aiohttp import web
@@ -127,3 +129,256 @@ async def test_upload_http_errors_are_not_success(serve, tmp_path, status):
         assert exc.value.code == status
     finally:
         await bot.close_session()
+
+
+@pytest.fixture
+def no_transfer_sleep(monkeypatch):
+    from maxapi_lite import transfers
+
+    async def no_sleep(delay):
+        pass
+
+    monkeypatch.setattr(transfers, "sleep", no_sleep, raising=False)
+
+
+async def test_download_streams_without_authorization(serve, tmp_path):
+    data = b"video" * 100_000
+    headers_seen = []
+
+    async def file(request):
+        headers_seen.append(request.headers)
+        return web.Response(body=data)
+
+    cdn = web.Application()
+    cdn.router.add_get("/file", file)
+    cdn_server = await serve(cdn)
+
+    async def redirect(request):
+        headers_seen.append(request.headers)
+        raise web.HTTPFound(str(cdn_server.make_url("/file")))
+
+    app = web.Application()
+    app.router.add_get("/redirect", redirect)
+    server = await serve(app)
+    bot = Bot("must-not-leak")
+    destination = tmp_path / "download.mp4"
+    try:
+        assert await bot.download_file(str(server.make_url("/redirect")), destination, chunk_size=17_001) == len(data)
+        assert destination.read_bytes() == data
+        assert len(headers_seen) == 2
+        assert all("Authorization" not in headers for headers in headers_seen)
+        assert list(tmp_path.iterdir()) == [destination]
+    finally:
+        await bot.close_session()
+
+
+@pytest.mark.parametrize("mode", ["range", "ignore-range", "bad-offset", "changed-etag", "no-validator", "bad-416"])
+async def test_download_resume(serve, tmp_path, no_transfer_sleep, monkeypatch, mode):
+    data = b"0123456789" * 10_000
+    ranges = []
+    prefix_consumed = asyncio.Event()
+    original_iter = aiohttp.StreamReader.iter_chunked
+
+    async def iter_chunked(reader, chunk_size):
+        consumed = 0
+        async for chunk in original_iter(reader, chunk_size):
+            yield chunk
+            consumed += len(chunk)
+            if consumed >= 20_000:
+                prefix_consumed.set()
+
+    monkeypatch.setattr(aiohttp.StreamReader, "iter_chunked", iter_chunked)
+
+    async def file(request):
+        assert "Authorization" not in request.headers
+        ranges.append(request.headers.get("Range"))
+        if len(ranges) == 1:
+            headers = {"Content-Length": str(len(data)), "Accept-Ranges": "bytes"}
+            if mode != "no-validator":
+                headers["ETag"] = '"test-v1"'
+            response = web.StreamResponse(headers=headers)
+            await response.prepare(request)
+            await response.write(data[:20_000])
+            await asyncio.wait_for(prefix_consumed.wait(), 2)
+            request.transport.close()
+            return response
+        if mode == "no-validator":
+            assert request.headers.get("Range") is None
+            return web.Response(body=data)
+        assert request.headers["Range"] == "bytes=20000-"
+        assert request.headers["If-Range"] == '"test-v1"'
+        assert request.headers["Accept-Encoding"] == "identity"
+        if mode == "ignore-range":
+            return web.Response(body=data, headers={"ETag": '"test-v1"'})
+        if mode == "bad-416":
+            return web.Response(status=416, headers={"Content-Range": "bytes */3"})
+        start = 1 if mode == "bad-offset" else 20_000
+        return web.Response(status=206, body=data[start:], headers={
+            "Content-Range": f"bytes {start}-{len(data)-1}/{len(data)}",
+            "ETag": '"test-v2"' if mode == "changed-etag" else '"test-v1"',
+        })
+
+    app = web.Application()
+    app.router.add_get("/file", file)
+    server = await serve(app)
+    bot = Bot("test")
+    path = tmp_path / "video.mp4"
+    path.write_bytes(b"old-file")
+    try:
+        if mode in ("bad-offset", "changed-etag", "bad-416"):
+            with pytest.raises(MaxApiError):
+                await bot.download_file(str(server.make_url("/file")), path, chunk_size=1000, max_retries=1)
+            assert path.read_bytes() == b"old-file"
+        else:
+            assert await bot.download_file(str(server.make_url("/file")), path, chunk_size=1000) == len(data)
+            assert path.read_bytes() == data
+        assert len(ranges) == 2
+        assert list(tmp_path.iterdir()) == [path]
+    finally:
+        await bot.close_session()
+
+
+async def test_download_expired_url_preserves_destination(serve, tmp_path):
+    calls = []
+
+    async def file(request):
+        calls.append(1)
+        return web.Response(status=403)
+
+    app = web.Application()
+    app.router.add_get("/file", file)
+    server = await serve(app)
+    path = tmp_path / "video.mp4"
+    path.write_bytes(b"old-file")
+    bot = Bot("test")
+    try:
+        with pytest.raises(MaxApiError) as exc:
+            await bot.download_file(str(server.make_url("/file")), path)
+        assert exc.value.code == 403
+        assert calls == [1]
+        assert path.read_bytes() == b"old-file"
+        assert list(tmp_path.iterdir()) == [path]
+    finally:
+        await bot.close_session()
+
+
+async def test_download_without_content_length(serve, tmp_path):
+    async def file(request):
+        response = web.StreamResponse()
+        response.enable_chunked_encoding()
+        await response.prepare(request)
+        await response.write(b"one")
+        await response.write(b"two")
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/file", file)
+    server = await serve(app)
+    bot = Bot("test")
+    try:
+        path = tmp_path / "chunked"
+        assert await bot.download_file(str(server.make_url("/file")), path) == 6
+        assert path.read_bytes() == b"onetwo"
+    finally:
+        await bot.close_session()
+
+
+async def test_download_cancellation_preserves_destination(serve, tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def file(request):
+        response = web.StreamResponse(headers={"Content-Length": "1000"})
+        await response.prepare(request)
+        await response.write(b"partial")
+        started.set()
+        await release.wait()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/file", file)
+    server = await serve(app)
+    path = tmp_path / "video.mp4"
+    path.write_bytes(b"old-file")
+    bot = Bot("test")
+    task = asyncio.create_task(bot.download_file(str(server.make_url("/file")), path))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert path.read_bytes() == b"old-file"
+        assert list(tmp_path.iterdir()) == [path]
+    finally:
+        release.set()
+        await bot.close_session()
+
+
+@pytest.mark.parametrize("kwargs", [{"chunk_size": 0}, {"chunk_size": -1}, {"max_retries": -1}])
+async def test_download_rejects_invalid_settings(tmp_path, kwargs):
+    with pytest.raises(ValueError):
+        await Bot("test").download_file("https://cdn.example/file", tmp_path / "file", **kwargs)
+
+
+async def test_download_retry_limit(serve, tmp_path, no_transfer_sleep):
+    calls = []
+
+    async def file(request):
+        calls.append(1)
+        response = web.StreamResponse(headers={"Content-Length": "100"})
+        await response.prepare(request)
+        request.transport.close()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/file", file)
+    server = await serve(app)
+    path = tmp_path / "file"
+    path.write_bytes(b"old")
+    bot = Bot("test")
+    try:
+        with pytest.raises(MaxApiError):
+            await bot.download_file(str(server.make_url("/file")), path, max_retries=3)
+        assert len(calls) == 4
+        assert path.read_bytes() == b"old"
+        assert list(tmp_path.iterdir()) == [path]
+    finally:
+        await bot.close_session()
+
+
+async def test_download_completed_range_416(tmp_path, no_transfer_sleep):
+    from types import SimpleNamespace
+    from maxapi_lite.transfers import download_file
+
+    class Response:
+        def __init__(self, status, headers):
+            self.status = status
+            self.headers = headers
+            self.content_length = 3
+            self.content = self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def iter_chunked(self, size):
+            yield b"abc"
+            raise aiohttp.ClientPayloadError("Connection lost after final chunk")
+
+    responses = iter([
+        Response(200, {"ETag": '"v1"'}),
+        Response(416, {"Content-Range": "bytes */3"}),
+    ])
+    requests = []
+
+    def get(url, **kwargs):
+        requests.append(kwargs)
+        return next(responses)
+
+    path = tmp_path / "file"
+    assert await download_file(SimpleNamespace(get=get), "https://cdn.example/file", path) == 3
+    assert path.read_bytes() == b"abc"
+    assert requests[1]["headers"]["Range"] == "bytes=3-"
