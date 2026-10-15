@@ -3,7 +3,6 @@ Max API Lite - легковесный клиент для Max API
 Совместим с aiohttp 3.8.4
 """
 
-import mimetypes
 import os
 import ssl
 from typing import Any, Dict, List, Optional, Union
@@ -15,6 +14,7 @@ from .client import MaxApiClient
 from .enums import ParseMode
 from .exceptions import MaxApiError
 from .types import Attachment
+from .transfers import multipart_upload, validate_upload_file
 
 
 class Bot:
@@ -167,38 +167,25 @@ class Bot:
             "photo": ("image", "image"),
             "animation": ("image", "image"),
             "video": ("video", "video"),
+            "audio": ("audio", "audio"),
             "document": ("file", "file"),
             "file": ("file", "file"),
             "image": ("image", "image"),
         }.get(media_type, ("file", "file"))
 
     async def upload_file(self, file_path: str, upload_type: str) -> Dict[str, Any]:
-        if not file_path or not os.path.isfile(file_path):
-            raise MaxApiError(f"File not found: {file_path}", 400)
+        """Upload a local file and preserve the token returned by either upload stage."""
+        upload_type = "image" if upload_type == "photo" else upload_type
+        validate_upload_file(file_path, upload_type)
 
         init_resp = await self.client.request("POST", "/uploads", params={"type": upload_type})
         upload_url = init_resp.get("url")
         if not upload_url:
-            raise MaxApiError(f"MAX upload init response has no url: {init_resp}", 500)
-
-        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-        async with aiohttp.ClientSession() as session:
-            with open(file_path, "rb") as media_file:
-                form = aiohttp.FormData()
-                form.add_field(
-                    "data",
-                    media_file,
-                    filename=os.path.basename(file_path),
-                    content_type=content_type,
-                )
-                async with session.post(upload_url, data=form) as response:
-                    if response.status >= 400:
-                        text = await response.text()
-                        raise MaxApiError(f"MAX upload failed [{response.status}]: {text}", response.status)
-                    try:
-                        return await response.json()
-                    except Exception:
-                        return {}
+            raise MaxApiError("MAX upload init response has no url", 502)
+        result = await multipart_upload(await self.client._get_transfer_session(), upload_url, file_path)
+        if not result.get("token") and init_resp.get("token"):
+            result["token"] = init_resp["token"]
+        return result
 
     async def create_media_attachment(
         self,
@@ -218,12 +205,14 @@ class Bot:
             photos = upload_resp.get("photos") or {}
             first_photo = next(iter(photos.values()), None) if isinstance(photos, dict) else None
             if not isinstance(first_photo, dict):
-                raise MaxApiError(f"MAX image upload payload is invalid: {upload_resp}", 500)
+                raise MaxApiError("MAX image upload payload is invalid", 502)
             payload = first_photo
         else:
             payload = upload_resp if isinstance(upload_resp, dict) else {}
             if not payload.get("token"):
-                raise MaxApiError(f"MAX upload payload is invalid: {upload_resp}", 500)
+                raise MaxApiError("MAX upload payload has no attachment token", 502)
+            if upload_type in ("video", "audio"):
+                payload = {"token": payload["token"]}
         return {"type": attachment_type, "payload": payload}
 
     async def send_message(
